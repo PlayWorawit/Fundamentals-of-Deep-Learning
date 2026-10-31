@@ -1,4 +1,4 @@
-
+import os
 import random
 from pathlib import Path
 
@@ -238,6 +238,8 @@ def train_model(model, train_loader, val_loader):
 
             MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
+            os.makedirs("models", exist_ok=True)
+            
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "classes": classes,
