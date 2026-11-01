@@ -4,8 +4,14 @@ import torch.nn as nn
 
 
 class ImprovedCNN(nn.Module):
-    def __init__(self, n_classes=10, p_drop=0.3):
+    def __init__(self, n_classes=10, p_drop=0.3, use_dropout=True):
         super().__init__()
+
+        # กำหนด Dropout ให้เปิดหรือปิดได้
+        def dropout2d(p):
+            return nn.Dropout2d(p) if use_dropout else nn.Identity()
+
+        dropout = nn.Dropout(p_drop) if use_dropout else nn.Identity()
 
         # Block 1: 32x32 -> 16x16
         self.block1 = nn.Sequential(
@@ -16,7 +22,7 @@ class ImprovedCNN(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
-            nn.Dropout2d(0.1)
+            dropout2d(0.1)
         )
 
         # Block 2: 16x16 -> 8x8
@@ -28,7 +34,7 @@ class ImprovedCNN(nn.Module):
             nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
-            nn.Dropout2d(0.2)
+            dropout2d(0.2)
         )
 
         # Block 3: 8x8 -> 4x4
@@ -37,7 +43,7 @@ class ImprovedCNN(nn.Module):
             nn.BatchNorm2d(128),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),
-            nn.Dropout2d(0.25)
+            dropout2d(0.25)
         )
 
         # Classifier: 128 x 4 x 4 = 2048
@@ -45,7 +51,7 @@ class ImprovedCNN(nn.Module):
             nn.Flatten(),
             nn.Linear(128 * 4 * 4, 256),
             nn.ReLU(),
-            nn.Dropout(p_drop),
+            dropout,
             nn.Linear(256, n_classes)
         )
 
