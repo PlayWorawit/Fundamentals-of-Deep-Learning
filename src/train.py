@@ -1,5 +1,7 @@
+
 import os
 import random
+import json
 from pathlib import Path
 
 import numpy as np
@@ -24,28 +26,46 @@ SUBSET_SIZE = 10000
 
 DATA_DIR = "./data"
 MODEL_DIR = Path("./models")
-MODEL_PATH = MODEL_DIR / "best_model.pth"
+RESULTS_DIR = Path("./results")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 # ==========================================
-# 2. Reproducibility
+# 2. Experiments
 # ==========================================
 
-random.seed(SEED)
-np.random.seed(SEED)
-torch.manual_seed(SEED)
-
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+EXPERIMENTS = [
+    {
+        "name": "baseline_dropout",
+        "use_dropout": True
+    },
+    {
+        "name": "ablation_no_dropout",
+        "use_dropout": False
+    }
+]
 
 
 # ==========================================
-# 3. Dataset Preparation
+# 3. Reproducibility
+# ==========================================
+
+def set_seed(seed=SEED):
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+# ==========================================
+# 4. Dataset Preparation
 # ==========================================
 
 norm = transforms.Normalize(
@@ -75,7 +95,6 @@ def prepare_data():
         transform=train_tf
     )
 
-    # Official test set remains untouched during training
     test_set = datasets.CIFAR10(
         DATA_DIR,
         train=False,
@@ -83,7 +102,7 @@ def prepare_data():
         transform=eval_tf
     )
 
-    # Reproduce the notebook's seeded 10,000-image subset
+    # Same seeded split for every experiment
     generator = torch.Generator().manual_seed(SEED)
 
     indices = torch.randperm(
@@ -98,7 +117,6 @@ def prepare_data():
 
     train_set = Subset(full_train, train_indices)
 
-    # Validation data must not use training augmentation
     val_base = datasets.CIFAR10(
         DATA_DIR,
         train=True,
@@ -137,7 +155,7 @@ def prepare_data():
 
 
 # ==========================================
-# 4. Evaluation Function
+# 5. Evaluation Function
 # ==========================================
 
 @torch.no_grad()
@@ -165,10 +183,17 @@ def evaluate(model, loader, loss_fn):
 
 
 # ==========================================
-# 5. Training Function
+# 6. Training Function
 # ==========================================
 
-def train_model(model, train_loader, val_loader):
+def train_model(
+    model,
+    train_loader,
+    val_loader,
+    classes,
+    experiment_name,
+    use_dropout
+):
 
     model = model.to(device)
 
@@ -189,6 +214,12 @@ def train_model(model, train_loader, val_loader):
         "val_acc": []
     }
 
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Each experiment has its own checkpoint
+    model_path = MODEL_DIR / f"{experiment_name}.pth"
+
     for epoch in range(EPOCHS):
 
         model.train()
@@ -198,18 +229,14 @@ def train_model(model, train_loader, val_loader):
             images = images.to(device)
             labels = labels.to(device)
 
-            # Forward pass
             outputs = model(images)
-
-            # Calculate loss
             loss = loss_fn(outputs, labels)
 
-            # Backpropagation
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-        # Evaluate using training and validation data
+        # Training and validation metrics
         train_loss, train_acc = evaluate(
             model, train_loader, loss_fn
         )
@@ -231,15 +258,11 @@ def train_model(model, train_loader, val_loader):
             f"Val Acc: {val_acc:.2%}"
         )
 
-        # Save the best checkpoint based on validation loss
+        # Save best checkpoint using validation loss
         if val_loss < best_val_loss:
 
             best_val_loss = val_loss
 
-            MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-            os.makedirs("models", exist_ok=True)
-            
             torch.save({
                 "model_state_dict": model.state_dict(),
                 "classes": classes,
@@ -250,17 +273,29 @@ def train_model(model, train_loader, val_loader):
                     "batch_size": BATCH_SIZE,
                     "epochs": EPOCHS,
                     "learning_rate": LEARNING_RATE,
-                    "weight_decay": WEIGHT_DECAY
+                    "weight_decay": WEIGHT_DECAY,
+                    "use_dropout": use_dropout,
+                    "experiment_name": experiment_name
                 }
-            }, MODEL_PATH)
+            }, model_path)
 
             print("  Best model checkpoint saved.")
+
+    # Save training history for later comparison
+    history_path = RESULTS_DIR / f"{experiment_name}_history.json"
+
+    with open(history_path, "w") as f:
+        json.dump(history, f, indent=4)
+
+    print(f"\nBest validation loss: {best_val_loss:.4f}")
+    print(f"Model saved at: {model_path}")
+    print(f"History saved at: {history_path}")
 
     return history
 
 
 # ==========================================
-# 6. Main
+# 7. Run All Experiments
 # ==========================================
 
 if __name__ == "__main__":
@@ -269,13 +304,62 @@ if __name__ == "__main__":
 
     train_loader, val_loader, test_loader, classes = prepare_data()
 
-    model = ImprovedCNN(n_classes=len(classes))
+    all_results = {}
 
-    history = train_model(
-        model,
-        train_loader,
-        val_loader
-    )
+    for experiment in EXPERIMENTS:
 
-    print("\nTraining completed.")
-    print(f"Best model saved at: {MODEL_PATH}")
+        experiment_name = experiment["name"]
+        use_dropout = experiment["use_dropout"]
+
+        print("\n" + "=" * 60)
+        print(f"EXPERIMENT: {experiment_name}")
+        print(f"Dropout enabled: {use_dropout}")
+        print("=" * 60)
+
+        # Reset seed to make experiments comparable
+        set_seed(SEED)
+
+        model = ImprovedCNN(
+            n_classes=len(classes),
+            use_dropout=use_dropout
+        )
+
+        history = train_model(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            classes=classes,
+            experiment_name=experiment_name,
+            use_dropout=use_dropout
+        )
+
+        all_results[experiment_name] = {
+            "best_val_acc": max(history["val_acc"]),
+            "best_val_loss": min(history["val_loss"]),
+            "final_train_acc": history["train_acc"][-1],
+            "final_val_acc": history["val_acc"][-1]
+        }
+
+    # ======================================
+    # 8. Experiment Comparison
+    # ======================================
+
+    print("\n" + "=" * 60)
+    print("ABLATION STUDY SUMMARY")
+    print("=" * 60)
+
+    for name, result in all_results.items():
+
+        print(f"\n{name}")
+        print(f"Best Validation Accuracy: {result['best_val_acc']:.2%}")
+        print(f"Best Validation Loss:     {result['best_val_loss']:.4f}")
+        print(f"Final Training Accuracy:  {result['final_train_acc']:.2%}")
+        print(f"Final Validation Accuracy:{result['final_val_acc']:.2%}")
+
+    summary_path = RESULTS_DIR / "ablation_summary.json"
+
+    with open(summary_path, "w") as f:
+        json.dump(all_results, f, indent=4)
+
+    print("\nAll experiments completed.")
+    print(f"Summary saved at: {summary_path}")
